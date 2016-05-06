@@ -54,8 +54,8 @@ test_part4: test_part3
 	@echo "Check the pcap file that you have implemented congestion control well."
 
 test_dg: all
-	@echo "Running test cases for handshake..."
-	@build/testTCP --gtest_filter="TestEnv_Reliable.TestAccept_*"
+	@echo "Running test cases for transfer"
+	@build/testTCP --gtest_filter="TestEnv_Any.TestTransfer_*"
 
 doxygen:
 	doxygen doxygen/Doxyfile

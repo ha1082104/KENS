@@ -61,12 +61,16 @@ namespace E
 		unsigned short src_port;
 		unsigned short dst_port;
 		bool is_bound = false;
-	   int backlog;
+	   	int backlog;
 		int seq_num;
 		int to_be_accepted = 0;
 		std::list< struct tcp_context > pending_conn_list;
 		std::list< struct tcp_context > estab_conn_list;
 		struct wakeup_arguments wake_args;
+
+		/* for transfer */
+		int unacked_packet = 0;
+		int trnasfer_seq_num = 0;
 	};
 
 	struct tcp_header
@@ -89,6 +93,11 @@ private:
 	int random_seq_num = 0;
 	int random_port = 10000;
 
+	/* for transfer */
+	uint8_t tcp_buf_send[500] = {0,};
+	uint32_t window_send = 100;
+	uint32_t MAX_SEQ = 100;
+
 private:
 	virtual void timerCallback(void* payload) final;
 
@@ -106,6 +115,8 @@ private:
 	std::list< struct tcp_context >::iterator get_context_addr_port (unsigned int, unsigned int, unsigned short, unsigned short);
 	std::list< struct tcp_context >::iterator find_pending_context (int, std::list< struct tcp_context > *);
 	void remove_tcp_context (int, int);
+
+	int syscall_write (UUID, int, int, const void*, int);
 
 public:
 	TCPAssignment(Host* host);

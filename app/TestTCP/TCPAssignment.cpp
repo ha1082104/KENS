@@ -65,7 +65,7 @@ void TCPAssignment::systemCallback(UUID syscallUUID, int pid, const SystemCallPa
 		//this->syscall_read(syscallUUID, pid, param.param1_int, param.param2_ptr, param.param3_int);
 		break;
 	case WRITE:
-		//this->syscall_write(syscallUUID, pid, param.param1_int, param.param2_ptr, param.param3_int);
+		this->syscall_write(syscallUUID, pid, param.param1_int, param.param2_ptr, param.param3_int);
 		break;
 	case CONNECT:
 		this->syscall_connect(syscallUUID, pid, param.param1_int,
@@ -183,6 +183,64 @@ void TCPAssignment::syscall_close (UUID syscallUUID, int pid, int fd)
 		this->removeFileDescriptor (pid, fd);
 		this->returnSystemCall (syscallUUID, 0);
 	}
+}
+
+int TCPAssignment::syscall_write (UUID syscallUUID, int pid, int sockfd, const void* send_buffer, int length)
+{
+	std::list< struct tcp_context >::iterator current_tcp_context = find_tcp_context(pid, sockfd);
+	int remain_byte = 0;
+	int sent_byte = 0;
+	if (length > sizeof(tcp_buf_send))
+		remain_byte = sizeof(tcp_buf_send);
+	else
+		remain_byte = length;
+
+	memcpy (this->tcp_buf_send, send_buffer, send_byte);
+	/*std::cout<<"*** [syscall_write] tcp_buf_send :";
+	for (int i = 0; i<500; i++)
+	{
+		std::cout<<tcp_buf_send[i];
+	}
+	std::cout<<std::endl;*/
+	while (remain_byte != 0)
+	{
+		int sending_byte = 0;
+		if ((sending_byte = this->window_send - current_tcp_context->unacked_packet) > remain_byte)
+			sending_byte = remain_byte;
+
+		int seq_num = htonl (current_tcp_context->transfer_seq_num);
+		int sending_flag = 0x0;
+		uint8_t hdr_len = 0x50;
+		unsigned short checksum = 0;
+		struct tcp_header tmp_header;
+
+		Packet *data_packet = this->allocatePacket (54);
+
+		data_packet->writeData (26, &current_tcp_context->src_addr, 4);
+		data_packet->writeData (30, &current_tcp_context->dst_addr, 4);
+		data_packet->writeData (34, &current_tcp_context->src_port, 2);
+		data_packet->writeData (36, &current_tcp_context->dst_port, 2);
+		data_packet->writeData (38, &seq_num, 4);
+		data_packet->writeData (46, &hdr_len, 1);
+		data_packet->writeData (47, &sending_flag, 1);
+		data_packet->writeData (50, &checksum, 2);
+
+		syn_packet->readData (34, &tmp_header, 20);
+		checksum = this->calculate_checksum (entry->src_addr, serv_addr_v4->sin_addr.s_addr, tmp_header);
+		syn_packet->writeData (50, &checksum, 2);
+
+		//TODO: transfer data from tcp_buf_send's start point + sent_byte with sending_byte
+
+		this->sendPacket ("IPv4", syn_packet);
+		current_tcp_context->unacked_packet = sending_byte;
+
+		remain_byte -= sending_byte;
+		snet_byte += sending_byte;
+		currnet_tcp_context->transfer_seq_num = (current_tcp_context->transfer_seq_num + sending_byte) % (this->MAX_SEQ + 1);
+	}
+	current_tcp_context->unacked_packet = 0;
+
+	//TODO: return sent_byte? or syscall_return has some function to return some value? 
 }
 
 void TCPAssignment::syscall_connect (UUID syscallUUID, int pid, int sockfd, struct sockaddr *serv_addr, socklen_t addrlen)
@@ -412,7 +470,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 	if (current_context != this->tcp_context_list.end ())
 		state = current_context->tcp_state;
 
-	std::cout<<"*** [packetArrived] SYN? ACK? "<<SYN<<" "<<ACK<<std::endl;
+	//std::cout<<"*** [packetArrived] SYN? ACK? "<<SYN<<" "<<ACK<<std::endl;
 	switch (state)
 	{
 		case E::LISTEN:

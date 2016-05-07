@@ -152,7 +152,7 @@ protected:
 
 		free(send_buffer);
 		free(recv_buffer);
-
+		std::cout<<"*** [testtransfer.cpp_accpet] total_size: "<<total_size<<std::endl;
 		EXPECT_EQ(expect_size, total_size);
 
 		close(client_fd);
@@ -269,7 +269,7 @@ protected:
 
 		free(send_buffer);
 		free(recv_buffer);
-
+		std::cout<<"*** [testtransfer.cpp_client] total_size: "<<total_size<<std::endl;
 		EXPECT_EQ(expect_size, total_size);
 
 		close(client_socket);

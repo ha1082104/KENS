@@ -70,7 +70,7 @@ namespace E
 
 		/* for transfer */
 		int unacked_packet = 0;
-		int trnasfer_seq_num = 0;
+		int transfer_seq_num = 0;
 	};
 
 	struct tcp_header
@@ -116,7 +116,8 @@ private:
 	std::list< struct tcp_context >::iterator find_pending_context (int, std::list< struct tcp_context > *);
 	void remove_tcp_context (int, int);
 
-	int syscall_write (UUID, int, int, const void*, int);
+	void syscall_write (UUID, int, int, const void*, int);
+	void syscall_read (UUID, int, int, void*, int);
 
 public:
 	TCPAssignment(Host* host);

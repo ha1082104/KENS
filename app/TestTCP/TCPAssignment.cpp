@@ -62,7 +62,7 @@ void TCPAssignment::systemCallback(UUID syscallUUID, int pid, const SystemCallPa
 		this->syscall_close(syscallUUID, pid, param.param1_int);
 		break;
 	case READ:
-		//this->syscall_read(syscallUUID, pid, param.param1_int, param.param2_ptr, param.param3_int);
+		this->syscall_read(syscallUUID, pid, param.param1_int, param.param2_ptr, param.param3_int);
 		break;
 	case WRITE:
 		this->syscall_write(syscallUUID, pid, param.param1_int, param.param2_ptr, param.param3_int);
@@ -113,7 +113,6 @@ void TCPAssignment::syscall_close (UUID syscallUUID, int pid, int fd)
 
 	if (cursor == this->tcp_context_list.end ())
 		this->returnSystemCall (syscallUUID, -1);
-	
 	if (cursor->tcp_state == E::ESTABLISHED)
 	{
 		int seq_num = htonl (this->random_seq_num);
@@ -185,29 +184,35 @@ void TCPAssignment::syscall_close (UUID syscallUUID, int pid, int fd)
 	}
 }
 
-int TCPAssignment::syscall_write (UUID syscallUUID, int pid, int sockfd, const void* send_buffer, int length)
+void TCPAssignment::syscall_read (UUID syscallUUID, int pid, int sockfd, void* send_buffer, int length)
+{
+}
+
+void TCPAssignment::syscall_write (UUID syscallUUID, int pid, int sockfd, const void* send_buffer, int length)
 {
 	std::list< struct tcp_context >::iterator current_tcp_context = find_tcp_context(pid, sockfd);
 	int remain_byte = 0;
 	int sent_byte = 0;
-	if (length > sizeof(tcp_buf_send))
-		remain_byte = sizeof(tcp_buf_send);
+	if (length > sizeof(this->tcp_buf_send))
+		remain_byte = sizeof(this->tcp_buf_send);
 	else
 		remain_byte = length;
 
-	memcpy (this->tcp_buf_send, send_buffer, send_byte);
+	memcpy (this->tcp_buf_send, send_buffer, remain_byte);
 	/*std::cout<<"*** [syscall_write] tcp_buf_send :";
 	for (int i = 0; i<500; i++)
 	{
 		std::cout<<tcp_buf_send[i];
 	}
 	std::cout<<std::endl;*/
+	//std::cout<<"*** [syscall_write] current_tcp_context's src_addr, dst_addr, src_port, dst_port: "<<current_tcp_context->src_addr<<", "<<current_tcp_context->dst_addr<<std::endl;
 	while (remain_byte != 0)
 	{
+		//TODO: sending byte is wrong! now, window_send is byte unit and unacked_packet is packet unit. We have to determine about latest kakaotalk conversation.
 		int sending_byte = 0;
 		if ((sending_byte = this->window_send - current_tcp_context->unacked_packet) > remain_byte)
 			sending_byte = remain_byte;
-
+		//std::cout<<"*** [syscall_write] sending_byte, unacked_packet: "<<sending_byte<<", "<<current_tcp_context->unacked_packet<<std::endl;
 		int seq_num = htonl (current_tcp_context->transfer_seq_num);
 		int sending_flag = 0x0;
 		uint8_t hdr_len = 0x50;
@@ -225,22 +230,22 @@ int TCPAssignment::syscall_write (UUID syscallUUID, int pid, int sockfd, const v
 		data_packet->writeData (47, &sending_flag, 1);
 		data_packet->writeData (50, &checksum, 2);
 
-		syn_packet->readData (34, &tmp_header, 20);
-		checksum = this->calculate_checksum (entry->src_addr, serv_addr_v4->sin_addr.s_addr, tmp_header);
-		syn_packet->writeData (50, &checksum, 2);
+		data_packet->readData (34, &tmp_header, 20);
+		checksum = this->calculate_checksum (current_tcp_context->src_addr, current_tcp_context->dst_addr, tmp_header);
+		data_packet->writeData (50, &checksum, 2);
 
-		//TODO: transfer data from tcp_buf_send's start point + sent_byte with sending_byte
+		// transfer data from tcp_buf_send's start point + sent_byte with sending_byte
+		data_packet->writeData (80, &((this->tcp_buf_send)[sent_byte]), sending_byte);
 
-		this->sendPacket ("IPv4", syn_packet);
-		current_tcp_context->unacked_packet = sending_byte;
+		this->sendPacket ("IPv4", data_packet);
+		current_tcp_context->unacked_packet += 1;
 
 		remain_byte -= sending_byte;
-		snet_byte += sending_byte;
-		currnet_tcp_context->transfer_seq_num = (current_tcp_context->transfer_seq_num + sending_byte) % (this->MAX_SEQ + 1);
+		sent_byte += sending_byte;
+		current_tcp_context->transfer_seq_num = (current_tcp_context->transfer_seq_num + sending_byte) % (this->MAX_SEQ + 1);
 	}
 	current_tcp_context->unacked_packet = 0;
-
-	//TODO: return sent_byte? or syscall_return has some function to return some value? 
+	this->returnSystemCall(syscallUUID, sent_byte);
 }
 
 void TCPAssignment::syscall_connect (UUID syscallUUID, int pid, int sockfd, struct sockaddr *serv_addr, socklen_t addrlen)
@@ -270,7 +275,7 @@ void TCPAssignment::syscall_connect (UUID syscallUUID, int pid, int sockfd, stru
 		new_context.sockfd = sockfd;
 		new_context.src_addr = local_ip;
 		new_context.src_port = htons (this->random_port++);
-		new_context.is_bound = true;
+		new_context.is_bound = true;//TODO: client's bound true?
 
 		this->tcp_context_list.push_back (new_context);
 		entry = this->find_tcp_context (pid, sockfd);
@@ -470,7 +475,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 	if (current_context != this->tcp_context_list.end ())
 		state = current_context->tcp_state;
 
-	//std::cout<<"*** [packetArrived] SYN? ACK? "<<SYN<<" "<<ACK<<std::endl;
+	std::cout<<"*** [packetArrived] SYN? ACK? state?"<<SYN<<" "<<ACK<<" "<<state<<std::endl;
 	switch (state)
 	{
 		case E::LISTEN:
@@ -615,6 +620,12 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 
 				current_context->tcp_state = E::CLOSE_WAIT;
 				this->sendPacket ("IPv4", ack_packet);
+			}
+
+			if (ACK)
+			{
+				std::cout<<"I'm here\n";
+				current_context->unacked_packet--;
 			}
 		}
 		break;

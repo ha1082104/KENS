@@ -55,7 +55,7 @@ test_part4: test_part3
 
 test_dg: all
 	@echo "Running test cases for transfer"
-	@build/testTCP --gtest_filter="TestEnv_Any.TestTransfer_*"
+	@build/testTCP --gtest_filter="TestEnv_Any.TestTransfer_Connect_Send_Symmetric"
 
 doxygen:
 	doxygen doxygen/Doxyfile

@@ -62,15 +62,21 @@ namespace E
 		unsigned short dst_port;
 		bool is_bound = false;
 	   	int backlog;
-		int seq_num;
+		unsigned int seq_num;
 		int to_be_accepted = 0;
 		std::list< struct tcp_context > pending_conn_list;
 		std::list< struct tcp_context > estab_conn_list;
 		struct wakeup_arguments wake_args;
 
 		/* for transfer */
-		int unacked_packet = 0;
-		int transfer_seq_num = 0;
+		struct sent_packet* window[5];
+		uint8_t tcp_buf_send[500] = {0,};
+		double estimatedRTT = 100;
+		double sampleRTT = 100;
+		double devRTT = 0;
+		double timeVar = 100;
+		double alpha = 0.125;
+		double beta = 0.25;
 	};
 
 	struct tcp_header
@@ -86,6 +92,15 @@ namespace E
 		unsigned short urg_ptr;
 	};
 
+	/* for transfer */
+	struct sent_packet
+	{
+		unsigned int sent_seq = 0;
+		unsigned int expect_ack = 0;
+		bool acked = false;
+		double sent_time;
+	}
+
 class TCPAssignment : public HostModule, public NetworkModule, public SystemCallInterface, private NetworkLog, private TimerModule
 {
 private:
@@ -94,9 +109,7 @@ private:
 	int random_port = 10000;
 
 	/* for transfer */
-	uint8_t tcp_buf_send[500] = {0,};
-	uint32_t window_send = 100;
-	uint32_t MAX_SEQ = 100;
+	uint32_t window_send = 5;
 
 private:
 	virtual void timerCallback(void* payload) final;
@@ -118,6 +131,9 @@ private:
 
 	void syscall_write (UUID, int, int, const void*, int);
 	void syscall_read (UUID, int, int, void*, int);
+
+	bool insert_sent_packet (struct sent_packet* window[window_send], struct sent_packet*);
+	int check_sent_packet (struct sent_packet* window[window_send], unsigned int recv_ack_num);
 
 public:
 	TCPAssignment(Host* host);

@@ -193,27 +193,21 @@ void TCPAssignment::syscall_write (UUID syscallUUID, int pid, int sockfd, const 
 	std::list< struct tcp_context >::iterator current_tcp_context = find_tcp_context(pid, sockfd);
 	int remain_byte = 0;
 	int sent_byte = 0;
-	if (length > sizeof(this->tcp_buf_send))
-		remain_byte = sizeof(this->tcp_buf_send);
+	if (length > sizeof(current_tcp_context->tcp_buf_send))
+		remain_byte = sizeof(current_tcp_context->tcp_buf_send);
 	else
 		remain_byte = length;
 
-	memcpy (this->tcp_buf_send, send_buffer, remain_byte);
-	/*std::cout<<"*** [syscall_write] tcp_buf_send :";
-	for (int i = 0; i<500; i++)
-	{
-		std::cout<<tcp_buf_send[i];
-	}
-	std::cout<<std::endl;*/
-	//std::cout<<"*** [syscall_write] current_tcp_context's src_addr, dst_addr, src_port, dst_port: "<<current_tcp_context->src_addr<<", "<<current_tcp_context->dst_addr<<std::endl;
+	memcpy (current_tcp_context->tcp_buf_send, send_buffer, remain_byte);
+
 	while (remain_byte != 0)
 	{
-		//TODO: sending byte is wrong! now, window_send is byte unit and unacked_packet is packet unit. We have to determine about latest kakaotalk conversation.
+		int loop = 0;
 		int sending_byte = 0;
-		if ((sending_byte = this->window_send - current_tcp_context->unacked_packet) > remain_byte)
+		if ((sending_byte = 100) > remain_byte)
 			sending_byte = remain_byte;
 		//std::cout<<"*** [syscall_write] sending_byte, unacked_packet: "<<sending_byte<<", "<<current_tcp_context->unacked_packet<<std::endl;
-		int seq_num = htonl (current_tcp_context->transfer_seq_num);
+		int seq_num = htonl (current_tcp_context->seq_num);
 		int sending_flag = 0x0;
 		uint8_t hdr_len = 0x50;
 		unsigned short checksum = 0;
@@ -235,16 +229,48 @@ void TCPAssignment::syscall_write (UUID syscallUUID, int pid, int sockfd, const 
 		data_packet->writeData (50, &checksum, 2);
 
 		// transfer data from tcp_buf_send's start point + sent_byte with sending_byte
-		data_packet->writeData (80, &((this->tcp_buf_send)[sent_byte]), sending_byte);
+		data_packet->writeData (80, &((current_tcp_context->tcp_buf_send)[sent_byte]), sending_byte);
 
+		// make structure 'sent_pkt' for saving some values (struct sent_packt is in hpp file)
+		struct sent_packet* sent_pkt = (struct sent_packet*)malloc(sizeof(struct sent_packet));
+		sent_pkt->sent_seq = seq_num;
+		sent_pkt->expect_ack = seq_num + sending_byte;
+		sent_pkt->sent_time = = this->getHost()->getSystem()->getCurrentTime();
+
+		// add timer only for first packet
+		if (loop == 0)
+		{
+			/* Timer */
+			struct timer_arguments *timer_args = (struct timer_arguments *) malloc (sizeof (struct timer_arguments));
+			timer_args->pid = current_tcp_context->pid;
+			timer_args->sockfd = current_tcp_context->sockfd;
+		
+			double estimatedRTT = current_tcp_context->estimatedRTT;
+			double sampleRTT = current_tcp_context->sampleRTT;
+			double devRTT  = current_tcp_context->devRTT;
+			double timeoutInterval;
+			double alpha = current_tcp_context->alpha;
+			double beta = current_tcp_context->beta;
+		
+			estimatedRTT = (1-alpha)*estimatedRTT + alpha*sampleRTT;
+			devRTT = (1-beta)*devRTT + abs(sampleRTT - estimateRTT);
+			timeoutInterval = estimatedRTT + 4*devRTT;
+		
+			this->addTimer ((void *) timer_args, this->getHost ()->getSystem ()->getCurrentTime () + timeoutInterval);
+			current_tcp_context->estimatedRTT = estimatedRTT;
+			current_tcp_context->devRTT = devRTT;
+		}
 		this->sendPacket ("IPv4", data_packet);
-		current_tcp_context->unacked_packet += 1;
+
+		if (!insert_sent_packet(&(current_tcp_context->window), sent_pkt))
+		std::cout<<"*** [syscall_write] something wrong!\n";
 
 		remain_byte -= sending_byte;
 		sent_byte += sending_byte;
-		current_tcp_context->transfer_seq_num = (current_tcp_context->transfer_seq_num + sending_byte) % (this->MAX_SEQ + 1);
+		current_tcp_context->seq_num += sending_byte;
 	}
-	current_tcp_context->unacked_packet = 0;
+	memset(current_tcp_context->window, 0, 5*sizeof(struct sent_packet*));
+	memset(current_tcp_context->tcp_buf_send, 0, 500);
 	this->returnSystemCall(syscallUUID, sent_byte);
 }
 
@@ -450,7 +476,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 	unsigned int dst_addr;
 	unsigned short checksum = 0;
 	uint8_t IHL;
-	int recv_seq_num, recv_ack_num;
+	unsigned int recv_seq_num, recv_ack_num;
 	bool FIN, SYN, ACK;
 	
 	/* For TCP Header */
@@ -624,8 +650,13 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 
 			if (ACK)
 			{
-				std::cout<<"I'm here\n";
-				current_context->unacked_packet--;
+				int order;
+				std::cout<<"*** [packetArrived] data ACK arrived\n";
+				if ((order = check_sent_packet (current_context->window, recv_ack_num)) == -1)
+					std::cout<<"*** [packetArrived] wrong ACK\n";
+				current_context->sampleRTT = this->getHost()->getSystem()->getCurrentTime() - current_context->window[order]->sent_time;
+
+				//TODO: timer re-setting
 			}
 		}
 		break;
@@ -792,11 +823,18 @@ void TCPAssignment::timerCallback(void* payload)
 {
 	std::list< struct tcp_context >::iterator entry = this->find_tcp_context (((struct timer_arguments *) payload)->pid, ((struct timer_arguments *) payload)->sockfd);
 
-	entry->tcp_state = E::CLOSED;
-	UUID retUUID = entry->wake_args.syscallUUID;
-	this->remove_tcp_context (entry->pid, entry->sockfd);
-	free ((struct timer_arguments *) payload);
-	this->returnSystemCall (retUUID, 0);
+	switch(entry->tcp_state)
+	{
+		case E::TIME_WAIT:
+			entry->tcp_state = E::CLOSED;
+			UUID retUUID = entry->wake_args.syscallUUID;
+			this->remove_tcp_context (entry->pid, entry->sockfd);
+			free ((struct timer_arguments *) payload);
+			this->returnSystemCall (retUUID, 0);
+			break;
+		case E::ESTABLISHED:
+		//TODO: retransmit code
+
 }
 
 /* Helper */
@@ -895,6 +933,61 @@ void TCPAssignment::remove_tcp_context (int pid, int sockfd)
 	}
 
 	return;
+}
+
+bool TCPAssignment::insert_sent_packet (struct sent_packet* window[this->window_send], struct sent_packet*)
+{
+	for (int i = 0; i<this->window_send; i++)
+	{
+		if (window[i] == NULL)
+		{
+			window[i] = sent_packet;
+			return true;
+		}
+	}
+	return false;
+}
+
+/* find corresponding packet for received ack_num, checking acked value for previous packet(cumulative acknoledge)
+ * return int value which indicate corresponding packet's order in window array */
+int TCPAssignment::check_sent_packet (struct sent_packet* window[this->window_send], unsigned int recv_ack_num)
+{
+	for (int i=0; i<this->window_send; i++)
+	{
+		if (window[i] != NULL)
+		{
+			if (window[i]->expect_ack == recv_ak_num)
+			{
+				for (int j=i; j>=0; j--)
+				{
+					window[j]->akced = true;
+				}
+				return i;
+			}
+		}
+	}
+	return -1;
+}
+
+//TODO: struct tcp_context* is right expression?
+//TODO: add to hpp file!
+double TCPASsignment::get_timeout_interval (struct tcp_context* current_tcp_context)
+{		
+	double estimatedRTT = current_tcp_context->estimatedRTT;
+	double sampleRTT = current_tcp_context->sampleRTT;
+	double devRTT  = current_tcp_context->devRTT;
+	double timeoutInterval;
+	double alpha = current_tcp_context->alpha;
+	double beta = current_tcp_context->beta;
+		
+	estimatedRTT = (1-alpha)*estimatedRTT + alpha*sampleRTT;
+	devRTT = (1-beta)*devRTT + abs(sampleRTT - estimateRTT);
+	timeoutInterval = estimatedRTT + 4*devRTT;
+
+	current_tcp_context->estimatedRTT = estimatedRTT;
+	current_tcp_context->devRTT = devRTT;
+
+	return timeoutInterval;
 }
 
 }

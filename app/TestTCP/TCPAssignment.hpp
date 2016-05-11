@@ -70,13 +70,16 @@ namespace E
 
 		/* for transfer */
 		struct sent_packet* window[5];
-		uint8_t tcp_buf_send[500] = {0,};
+		uint8_t tcp_buf_send[TCPAssignment:MSS*5] = {0,};
 		double estimatedRTT = 100;
 		double sampleRTT = 100;
 		double devRTT = 0;
+		double timeoutInterval = 0;
 		double timeVar = 100;
 		double alpha = 0.125;
 		double beta = 0.25;
+		UUID transfer_syscallUUID;
+		UUID transfer_timerUUID;
 	};
 
 	struct tcp_header
@@ -98,6 +101,8 @@ namespace E
 		unsigned int sent_seq = 0;
 		unsigned int expect_ack = 0;
 		bool acked = false;
+		uint8_t data[TCPAssignment:MSS] = {0,};
+		int data_length;
 		double sent_time;
 	}
 
@@ -109,7 +114,8 @@ private:
 	int random_port = 10000;
 
 	/* for transfer */
-	uint32_t window_send = 5;
+	uint32_t window_send_size = 5;
+	int MSS = 512;
 
 private:
 	virtual void timerCallback(void* payload) final;
@@ -132,8 +138,10 @@ private:
 	void syscall_write (UUID, int, int, const void*, int);
 	void syscall_read (UUID, int, int, void*, int);
 
-	bool insert_sent_packet (struct sent_packet* window[window_send], struct sent_packet*);
-	int check_sent_packet (struct sent_packet* window[window_send], unsigned int recv_ack_num);
+	bool insert_sent_packet (struct sent_packet* window[window_send_size], struct sent_packet*);
+	int check_sent_packet (struct sent_packet* window[window_send_size], unsigned int recv_ack_num);
+	bool check_window_send (struct sent_packet* window[window_send_size]);
+	double get_timeout_interval (struct tcp_context* current_tcp_context);
 
 public:
 	TCPAssignment(Host* host);

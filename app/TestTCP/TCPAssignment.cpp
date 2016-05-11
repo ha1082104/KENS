@@ -23,6 +23,8 @@
 #define ACK_FLAG 0x10
 #define URG_FLAG 0x20			/* generally not used. */
 #define MSL 60000
+#define ALPHA 0.125
+#define BETA 0.25
 
 namespace E
 {
@@ -190,24 +192,30 @@ void TCPAssignment::syscall_read (UUID syscallUUID, int pid, int sockfd, void* s
 
 void TCPAssignment::syscall_write (UUID syscallUUID, int pid, int sockfd, const void* send_buffer, int length)
 {
-	std::list< struct tcp_context >::iterator current_tcp_context = find_tcp_context(pid, sockfd);
+	std::list< struct tcp_context >::iterator current_context = find_tcp_context(pid, sockfd);
+	
+	// initialize buffer
+	memset(current_context->window, 0, (this->window_send_size)*sizeof(struct sent_packet*));
+	memset(current_context->tcp_buf_send, 0, (this->MSS)*(this->window_send_size));
+
+
 	int remain_byte = 0;
 	int sent_byte = 0;
-	if (length > sizeof(current_tcp_context->tcp_buf_send))
-		remain_byte = sizeof(current_tcp_context->tcp_buf_send);
+	if (length > sizeof(current_context->tcp_buf_send))
+		remain_byte = sizeof(current_context->tcp_buf_send);
 	else
 		remain_byte = length;
 
-	memcpy (current_tcp_context->tcp_buf_send, send_buffer, remain_byte);
+	memcpy (current_context->tcp_buf_send, send_buffer, remain_byte);
 
 	while (remain_byte != 0)
 	{
 		int loop = 0;
 		int sending_byte = 0;
-		if ((sending_byte = 100) > remain_byte)
+		if ((sending_byte = this->MSS) > remain_byte)
 			sending_byte = remain_byte;
 		//std::cout<<"*** [syscall_write] sending_byte, unacked_packet: "<<sending_byte<<", "<<current_tcp_context->unacked_packet<<std::endl;
-		int seq_num = htonl (current_tcp_context->seq_num);
+		int seq_num = htonl (current_context->seq_num);
 		int sending_flag = 0x0;
 		uint8_t hdr_len = 0x50;
 		unsigned short checksum = 0;
@@ -215,63 +223,52 @@ void TCPAssignment::syscall_write (UUID syscallUUID, int pid, int sockfd, const 
 
 		Packet *data_packet = this->allocatePacket (54);
 
-		data_packet->writeData (26, &current_tcp_context->src_addr, 4);
-		data_packet->writeData (30, &current_tcp_context->dst_addr, 4);
-		data_packet->writeData (34, &current_tcp_context->src_port, 2);
-		data_packet->writeData (36, &current_tcp_context->dst_port, 2);
+		data_packet->writeData (26, &current_context->src_addr, 4);
+		data_packet->writeData (30, &current_context->dst_addr, 4);
+		data_packet->writeData (34, &current_context->src_port, 2);
+		data_packet->writeData (36, &current_context->dst_port, 2);
 		data_packet->writeData (38, &seq_num, 4);
 		data_packet->writeData (46, &hdr_len, 1);
 		data_packet->writeData (47, &sending_flag, 1);
 		data_packet->writeData (50, &checksum, 2);
 
 		data_packet->readData (34, &tmp_header, 20);
-		checksum = this->calculate_checksum (current_tcp_context->src_addr, current_tcp_context->dst_addr, tmp_header);
+		checksum = this->calculate_checksum (current_context->src_addr, current_context->dst_addr, tmp_header);
 		data_packet->writeData (50, &checksum, 2);
 
 		// transfer data from tcp_buf_send's start point + sent_byte with sending_byte
-		data_packet->writeData (80, &((current_tcp_context->tcp_buf_send)[sent_byte]), sending_byte);
+		data_packet->writeData (54, &((current_context->tcp_buf_send)[sent_byte]), sending_byte);
 
 		// make structure 'sent_pkt' for saving some values (struct sent_packt is in hpp file)
 		struct sent_packet* sent_pkt = (struct sent_packet*)malloc(sizeof(struct sent_packet));
 		sent_pkt->sent_seq = seq_num;
 		sent_pkt->expect_ack = seq_num + sending_byte;
+		memcpy (sent_pkt->data, &((current_context->tcp_buf_send)[sent_byte]), sending_byte);
+		sent_pkt->data_length = sending_byte;
 		sent_pkt->sent_time = = this->getHost()->getSystem()->getCurrentTime();
 
 		// add timer only for first packet
 		if (loop == 0)
 		{
+			UUID timerUUID;
 			/* Timer */
 			struct timer_arguments *timer_args = (struct timer_arguments *) malloc (sizeof (struct timer_arguments));
-			timer_args->pid = current_tcp_context->pid;
-			timer_args->sockfd = current_tcp_context->sockfd;
-		
-			double estimatedRTT = current_tcp_context->estimatedRTT;
-			double sampleRTT = current_tcp_context->sampleRTT;
-			double devRTT  = current_tcp_context->devRTT;
-			double timeoutInterval;
-			double alpha = current_tcp_context->alpha;
-			double beta = current_tcp_context->beta;
-		
-			estimatedRTT = (1-alpha)*estimatedRTT + alpha*sampleRTT;
-			devRTT = (1-beta)*devRTT + abs(sampleRTT - estimateRTT);
-			timeoutInterval = estimatedRTT + 4*devRTT;
-		
-			this->addTimer ((void *) timer_args, this->getHost ()->getSystem ()->getCurrentTime () + timeoutInterval);
-			current_tcp_context->estimatedRTT = estimatedRTT;
-			current_tcp_context->devRTT = devRTT;
+			
+			double timeoutInterval = get_timeout_interval(current_context);
+			timerUUID = this->addTimer ((void *) timer_args, this->getHost ()->getSystem ()->getCurrentTime () + timeoutInterval);
+			current_context->transfer_timerUUID = timerUUID;
 		}
 		this->sendPacket ("IPv4", data_packet);
 
-		if (!insert_sent_packet(&(current_tcp_context->window), sent_pkt))
+		if (!insert_sent_packet(&(current_context->window), sent_pkt))
 		std::cout<<"*** [syscall_write] something wrong!\n";
 
 		remain_byte -= sending_byte;
 		sent_byte += sending_byte;
-		current_tcp_context->seq_num += sending_byte;
+		current_context->seq_num += sending_byte;
 	}
-	memset(current_tcp_context->window, 0, 5*sizeof(struct sent_packet*));
-	memset(current_tcp_context->tcp_buf_send, 0, 500);
-	this->returnSystemCall(syscallUUID, sent_byte);
+	current_context->transfer_syscallUUID = syscallUUID;
+	return;
 }
 
 void TCPAssignment::syscall_connect (UUID syscallUUID, int pid, int sockfd, struct sockaddr *serv_addr, socklen_t addrlen)
@@ -655,8 +652,18 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 				if ((order = check_sent_packet (current_context->window, recv_ack_num)) == -1)
 					std::cout<<"*** [packetArrived] wrong ACK\n";
 				current_context->sampleRTT = this->getHost()->getSystem()->getCurrentTime() - current_context->window[order]->sent_time;
+				this->cancleTimer(current_context->transfer_timerUUID);
 
-				//TODO: timer re-setting
+				if (check_window_send (current_context->window))
+					returnSystemCall (current_context->transfer_syscallUUID, 1);
+				else
+				{
+					// timer re-setting
+					struct timer_arguments *timer_args = (struct timer_arguments *) malloc (sizeof (struct timer_arguments));
+			
+					double timeoutInterval = get_timeout_interval(current_tcp_context);
+					this->addTimer ((void *) timer_args, this->getHost ()->getSystem ()->getCurrentTime () + timeoutInterval);
+				}
 			}
 		}
 		break;
@@ -833,7 +840,37 @@ void TCPAssignment::timerCallback(void* payload)
 			this->returnSystemCall (retUUID, 0);
 			break;
 		case E::ESTABLISHED:
-		//TODO: retransmit code
+			int sending_flag = 0x0;
+			uint8_t hdr_len = 0x50;
+			unsigned short checksum = 0;
+			struct tcp_header tmp_header;
+
+			Packet *data_packet = this->allocatePacket (54);
+
+			data_packet->writeData (26, &current_tcp_context->src_addr, 4);
+			data_packet->writeData (30, &current_tcp_context->dst_addr, 4);
+			data_packet->writeData (34, &current_tcp_context->src_port, 2);
+			data_packet->writeData (36, &current_tcp_context->dst_port, 2);
+			data_packet->writeData (38, &seq_num, 4);
+			data_packet->writeData (46, &hdr_len, 1);
+			data_packet->writeData (47, &sending_flag, 1);
+			data_packet->writeData (50, &checksum, 2);
+	
+			data_packet->readData (34, &tmp_header, 20);
+			checksum = this->calculate_checksum (current_tcp_context->src_addr, current_tcp_context->dst_addr, tmp_header);
+			data_packet->writeData (50, &checksum, 2);
+
+			// transfer data from tcp_buf_send's start point + sent_byte with sending_byte
+			data_packet->writeData (54, &((current_tcp_context->tcp_buf_send)[sent_byte]), sending_byte);
+	
+			// add timer only for first packet
+			struct timer_arguments *timer_args = (struct timer_arguments *) malloc (sizeof (struct timer_arguments));
+			this->addTimer ((void *) timer_args, this->getHost ()->getSystem ()->getCurrentTime () + entry->timeoutInterval);
+
+			this->sendPacket ("IPv4", data_packet);
+
+			break;
+	}
 
 }
 
@@ -935,9 +972,9 @@ void TCPAssignment::remove_tcp_context (int pid, int sockfd)
 	return;
 }
 
-bool TCPAssignment::insert_sent_packet (struct sent_packet* window[this->window_send], struct sent_packet*)
+bool TCPAssignment::insert_sent_packet (struct sent_packet* window[this->window_send_size], struct sent_packet*)
 {
-	for (int i = 0; i<this->window_send; i++)
+	for (int i = 0; i<this->window_send_size; i++)
 	{
 		if (window[i] == NULL)
 		{
@@ -950,9 +987,9 @@ bool TCPAssignment::insert_sent_packet (struct sent_packet* window[this->window_
 
 /* find corresponding packet for received ack_num, checking acked value for previous packet(cumulative acknoledge)
  * return int value which indicate corresponding packet's order in window array */
-int TCPAssignment::check_sent_packet (struct sent_packet* window[this->window_send], unsigned int recv_ack_num)
+int TCPAssignment::check_sent_packet (struct sent_packet* window[this->window_send_size], unsigned int recv_ack_num)
 {
-	for (int i=0; i<this->window_send; i++)
+	for (int i=0; i<this->window_send_size; i++)
 	{
 		if (window[i] != NULL)
 		{
@@ -969,23 +1006,35 @@ int TCPAssignment::check_sent_packet (struct sent_packet* window[this->window_se
 	return -1;
 }
 
+bool TCPAssignment::check_window_send (struct sent_packet* window[this->window_send_size])
+{
+	for (int i=0; i<this->window_send_size; i++)
+	{
+		if (window[i] != NULL)
+		{
+			if (!window[i]->acked)
+				return false;
+		}
+	}
+	return true;;
+
+}
+
 //TODO: struct tcp_context* is right expression?
-//TODO: add to hpp file!
 double TCPASsignment::get_timeout_interval (struct tcp_context* current_tcp_context)
 {		
 	double estimatedRTT = current_tcp_context->estimatedRTT;
 	double sampleRTT = current_tcp_context->sampleRTT;
 	double devRTT  = current_tcp_context->devRTT;
 	double timeoutInterval;
-	double alpha = current_tcp_context->alpha;
-	double beta = current_tcp_context->beta;
 		
-	estimatedRTT = (1-alpha)*estimatedRTT + alpha*sampleRTT;
-	devRTT = (1-beta)*devRTT + abs(sampleRTT - estimateRTT);
+	estimatedRTT = (1-ALPHA)*estimatedRTT + ALPHA*sampleRTT;
+	devRTT = (1-BETA)*devRTT + BETA*abs(sampleRTT - estimateRTT);
 	timeoutInterval = estimatedRTT + 4*devRTT;
 
 	current_tcp_context->estimatedRTT = estimatedRTT;
 	current_tcp_context->devRTT = devRTT;
+	current_tcp_context->timeoutInterval = timeoutInterval;
 
 	return timeoutInterval;
 }

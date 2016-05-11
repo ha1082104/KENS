@@ -270,7 +270,7 @@ void TCPAssignment::syscall_write (UUID syscallUUID, int pid, int sockfd, const 
 		sent_byte += sending_byte;
 		current_context->seq_num += sending_byte;
 	}
-	current_context->transfer_syscallUUID = syscallUUID;
+	current_context->wake_args.syscallUUID = syscallUUID;
 	return;
 }
 
@@ -658,7 +658,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 				this->cancleTimer(current_context->transfer_timerUUID);
 
 				if (check_window_send (current_context->window))
-					returnSystemCall (current_context->transfer_syscallUUID, 1);
+					returnSystemCall (current_context->wake_args.syscallUUID, 1);
 				else
 				{
 					// timer re-setting

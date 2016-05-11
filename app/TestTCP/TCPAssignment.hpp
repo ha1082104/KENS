@@ -70,8 +70,9 @@ namespace E
 		struct wakeup_arguments wake_args;
 
 		/* for transfer */
+		//TODO: I can't use variable of TCPAssignment class! I want to use MSS, window_send_size, etc...
 		struct sent_packet* window[5];
-		uint8_t tcp_buf_send[TCPAssignment:MSS*5] = {0,};
+		uint8_t tcp_buf_send[512*5] = {0,};
 		double estimatedRTT = 100;
 		double sampleRTT = 100;
 		double devRTT = 0;
@@ -104,7 +105,7 @@ namespace E
 		int data_start = 0;
 		int data_length = 0;
 		double sent_time;
-	}
+	};
 
 class TCPAssignment : public HostModule, public NetworkModule, public SystemCallInterface, private NetworkLog, private TimerModule
 {
@@ -114,7 +115,7 @@ private:
 	int random_port = 10000;
 
 	/* for transfer */
-	uint32_t window_send_size = 5;
+	int window_send_size = 5;
 	int MSS = 512;
 
 private:

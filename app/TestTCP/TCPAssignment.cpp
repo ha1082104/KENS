@@ -243,7 +243,7 @@ void TCPAssignment::syscall_write (UUID syscallUUID, int pid, int sockfd, const 
 		struct sent_packet* sent_pkt = (struct sent_packet*)malloc(sizeof(struct sent_packet));
 		sent_pkt->sent_seq = seq_num;
 		sent_pkt->expect_ack = seq_num + sending_byte;
-		memcpy (sent_pkt->data, &((current_context->tcp_buf_send)[sent_byte]), sending_byte);
+		sent_pkt->data_start = sent_byte;
 		sent_pkt->data_length = sending_byte;
 		sent_pkt->sent_time = = this->getHost()->getSystem()->getCurrentTime();
 
@@ -253,6 +253,9 @@ void TCPAssignment::syscall_write (UUID syscallUUID, int pid, int sockfd, const 
 			UUID timerUUID;
 			/* Timer */
 			struct timer_arguments *timer_args = (struct timer_arguments *) malloc (sizeof (struct timer_arguments));
+			timer_args->pid = current_context->pid;
+			timer_args->sockfd = current_context->sockfd;
+			timer_args->seq_num = seq_num;
 			
 			double timeoutInterval = get_timeout_interval(current_context);
 			timerUUID = this->addTimer ((void *) timer_args, this->getHost ()->getSystem ()->getCurrentTime () + timeoutInterval);
@@ -660,8 +663,11 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 				{
 					// timer re-setting
 					struct timer_arguments *timer_args = (struct timer_arguments *) malloc (sizeof (struct timer_arguments));
-			
-					double timeoutInterval = get_timeout_interval(current_tcp_context);
+					timer_args->pid = current_context->pid;
+					timer_args->sockfd = current_context->sockfd;
+					timer_args->seq_num = find_oldest_unacked_packet (current_context->window); 
+					
+					double timeoutInterval = get_timeout_interval(current_context);
 					this->addTimer ((void *) timer_args, this->getHost ()->getSystem ()->getCurrentTime () + timeoutInterval);
 				}
 			}
@@ -843,7 +849,7 @@ void TCPAssignment::timerCallback(void* payload)
 			int sending_flag = 0x0;
 			uint8_t hdr_len = 0x50;
 			unsigned short checksum = 0;
-			struct tcp_header tmp_header;
+			struct tcp_header tmp_header;	
 
 			Packet *data_packet = this->allocatePacket (54);
 
@@ -861,7 +867,7 @@ void TCPAssignment::timerCallback(void* payload)
 			data_packet->writeData (50, &checksum, 2);
 
 			// transfer data from tcp_buf_send's start point + sent_byte with sending_byte
-			data_packet->writeData (54, &((current_tcp_context->tcp_buf_send)[sent_byte]), sending_byte);
+			data_packet->writeData (54, &((current_tcp_context->tcp_buf_send)[]), sending_byte);
 	
 			// add timer only for first packet
 			struct timer_arguments *timer_args = (struct timer_arguments *) malloc (sizeof (struct timer_arguments));
@@ -1016,8 +1022,21 @@ bool TCPAssignment::check_window_send (struct sent_packet* window[this->window_s
 				return false;
 		}
 	}
-	return true;;
+	return true;
+}
 
+unsigned int TCPAssignment::find_oldest_unacked_packet (struct sent_packet* window[this->window_send_size])
+{
+	for (int i=0; i<this->window_send_size; i++)
+	{
+		if (window[i] != NULL)
+		{
+			if (!window[i]->acked)
+				return window[i]->sent_seq;
+		}
+	}
+	// TODO: 0 value is not good..
+	return 0; 
 }
 
 //TODO: struct tcp_context* is right expression?

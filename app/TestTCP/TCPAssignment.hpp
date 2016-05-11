@@ -49,6 +49,7 @@ namespace E
 	{
 		int pid;
 		int sockfd;
+		unsigned int seq_num;
 	};
 
 	struct tcp_context
@@ -75,7 +76,6 @@ namespace E
 		double sampleRTT = 100;
 		double devRTT = 0;
 		double timeoutInterval = 0;
-		double timeVar = 100;
 		double alpha = 0.125;
 		double beta = 0.25;
 		UUID transfer_syscallUUID;
@@ -101,8 +101,8 @@ namespace E
 		unsigned int sent_seq = 0;
 		unsigned int expect_ack = 0;
 		bool acked = false;
-		uint8_t data[TCPAssignment:MSS] = {0,};
-		int data_length;
+		int data_start = 0;
+		int data_length = 0;
 		double sent_time;
 	}
 
@@ -141,6 +141,7 @@ private:
 	bool insert_sent_packet (struct sent_packet* window[window_send_size], struct sent_packet*);
 	int check_sent_packet (struct sent_packet* window[window_send_size], unsigned int recv_ack_num);
 	bool check_window_send (struct sent_packet* window[window_send_size]);
+	unsigned int find_oldest_unacked_packet (struct sent_packet* window[window_send_size]);
 	double get_timeout_interval (struct tcp_context* current_tcp_context);
 
 public:
